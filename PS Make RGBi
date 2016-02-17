@@ -1,0 +1,196 @@
+#target photoshop
+#include "BECS_Lib.jsx"
+#include "BEPS_Lib.jsx"
+/////////////////////////////////////////////
+// To debug a library file, it MUST be saved EVERY time before use the "step into" command.  ESTK loads the file from the disk EVERY time when it is in "step into" mode
+/////////////////////////////////////////////
+/*FEATURES:
+- can be launched from both bridge and photoshop
+- full logging of errors and processed files
+-sets  zoom to 50%
+- makes sure that all layers are visible.  Since WH is above RGB it will be visible with all annotation layers
+
+- Error Checking:
+	-some preprocessing to confirm RGB and WH layers exist before starting
+*/
+
+
+var bDebugging = false;
+var sLogFileName = "PSMakeRGBI"
+var sMe = "PSMakeRGBI"
+var sScriptName = "PS Make RGBI"
+
+preferences.rulerUnits = Units.PIXELS
+
+//================Preparation for Main()================
+if (bDebugging == true){
+	while (app.documents.length) {
+	app.activeDocument.close(SaveOptions.DONOTSAVECHANGES)
+	}
+}
+
+//in bDebugging mode, load objects from files
+if (bDebugging == true) {
+$.writeln("--==Debugging Mode - Loading Objects from Disk==--")
+	if(File(dataFolderPath + 'Object01.txt').exists && File(dataFolderPath + 'Object02.txt').exists){
+		var Object01 = BECS.ReadStringFromFile(dataFolderPath + 'Object01.txt')
+		var Object02 = BECS.ReadStringFromFile(dataFolderPath + 'Object02.txt')
+	}else{
+		sMsg = "DEBUG: Missing an object file."
+		BECS.WriteLog(oLog, 3, sMe, sMsg, true, "", dataFolderPath)
+	}
+}
+
+//convert our strings to public objects
+var oProcess = new Object;
+var oLog = new Object;
+
+//using the EVAL statement to define variables is critical.  A variable declared from Bridgetalk and then here, will set the variable as undefined.  
+//By 'hiding' the declaration via text we can use this script to accept variables from bridgetalk or set them here. 
+//(this took many hours of Debugging to figure this out)
+if ( typeof(sObject01) == "undefined" ) { eval("var sObject01 = Object01")}
+if ( typeof(sObject02) == "undefined" ) { eval("var sObject02 = Object02")}
+
+if(sObject01 != undefined) {oProcess = eval(sObject01)}
+if(sObject02 != undefined) {oLog = eval(sObject02)}
+
+//prep the logfile
+if (oLog.file == undefined){
+	var oLog = new logObject("", "")
+	oLog.StartTime = new Date().getTime() //for elapsed time
+	oLog.sLogFileDate = dateFormat("yyyy'.'mm'.'dd_H'.'MM'.'ss")
+	oLog.sScriptName = sScriptName
+	oLog.file = oLog.fileCreate(oLog.LogPath,sMe)
+	oLog.fWorkingPath = Folder(app.activeDocument.path)
+}
+if (!oLog.file.parent.exists) oLog.file.parent.create() //create the 'Error_Log' folder if it does not exist
+oLog.StartTime = new Date().getTime()
+
+Main();
+
+function Main(){//main
+var sMe = "PSMakeRGBIs"
+
+var bCurDoc = false
+try { //Main error try
+
+//================Process Many RGBI files from Bridge================
+	//prep aProcess if there is a list of files
+	if (oProcess != undefined) aProcess = oProcess
+	oLog.StartTime = new Date().getTime() //for elapsed time
+	
+	
+//================Proces the current document into a  RGBI File================	
+	//use the current document if aProcess does not have a list of files
+	var bUseCurrent = false
+	if (app.documents.length == 0 && aProcess[0] == undefined) {
+		sMsg = "ERROR - NO OPEN FILE: This script can't be run without an open document."
+		BECS.WriteLog(oLog, 3, sMe, sMsg) //exit script
+	}
+	if(app.documents.length != 0 && aProcess[0] == undefined)  { ///*make sure that we are not using data files*/ /*&& (!fBridgeArrayData.exists || !fBridgeLogFileData.exists || bUseOld == false || bUseOld == undefined /*test for data files and bUseOld confirmation)*/){  //use current test
+	bUseCurrent = confirm("Do you wish to make a new RGBI based on the current document?")
+	if(bUseCurrent == false)Error.runtimeError(9999, "Exit Script")
+
+		//launch GUI to select transformation
+		oGUISelTrans = BEGUI.SelectTransformation(0)
+		if (oGUISelTrans.sResult.toLowerCase() == "cancel"){Error.runtimeError(9999, "Exit Script");} //get out if cancelled
+		oLog.StartTime = new Date().getTime() //for elapsed time
+
+		if(bUseCurrent == true){ //use current Confirm
+			var curDoc = app.activeDocument
+
+			//replace 3rd element in filename with IR and RGB then find the FilePath for aProcess
+			var aProcess = [];
+			aProcess[0] = new Array(1) //the array is setup this way to match what is returned by bridge	
+			var aFullName = curDoc.name.split(".")
+			var aName = aFullName[0].split("_")
+
+			//find files to create RGBI.  Will search for .DNG, .TIF, and .JPG in corresponding order
+			aName[2] = "RGB"
+			aProcess[0][0] = curDoc.path.getFiles(decodeURI(aName.join("_") + ".dng"))
+			if (aProcess[0][0] == "") {aProcess[0][0] = curDoc.path.getFiles(decodeURI(aName.join("_") + ".tif"))}
+			if (aProcess[0][0] == "") {aProcess[0][0] = curDoc.path.getFiles(decodeURI(aName.join("_") + ".CR2"))}
+			if (aProcess[0][0] == "") {aProcess[0][0] = curDoc.path.getFiles(decodeURI(aName.join("_") + ".jpg"))}
+			aName[2] = "IR"
+			aProcess[0][1] = curDoc.path.getFiles(decodeURI(aName.join("_") + ".dng"))
+			if (aProcess[0][1] == "") {aProcess[0][1] = curDoc.path.getFiles(decodeURI(aName.join("_") + ".tif"))}
+			if (aProcess[0][1] == "") {aProcess[0][1] = curDoc.path.getFiles(decodeURI(aName.join("_") + ".CR2"))}
+			if (aProcess[0][1] == "") {aProcess[0][1] = curDoc.path.getFiles(decodeURI(aName.join("_") + ".jpg"))}
+
+			//determine if the files were found and throw an error if not
+			if(aProcess[0][0] == undefined || aProcess[0][0] == "" || aProcess[0][1] == undefined || aProcess[0][1] == ""){
+				var sRGBFile = (aProcess[0][0] == "") ? "" : File(aProcess[0][0]).name
+				var sIRFile = (aProcess[0][1] == "") ? "" : File(aProcess[0][1]).name				
+				sMsg = "ERROR - MISSING FILE(S): Based on file (" + curDoc.name + "). Both IR and RGB files are required to continue.\n\nI was able to find:\nRGB : " + sRGBFile + "\nIR : " +  sIRFile + "\n\n Make sure that the RGB and IR files are found in:\n" + curDoc.path.fsName
+				BECS.WriteLog(oLog, 3, sMe, sMsg, true, curDoc.name)
+			}
+
+			if(oGUISelTrans.bNoTransform == true) oLog.str = "_i2k"
+			if(oGUISelTrans.bStandardTransform == true) oLog.str = "_Standard"
+			oLog.str = oLog.str + "_" + dateFormat("yyyy'.'mm'.'dd_H'.'MM'.'ss")
+
+			bCurDoc = true
+			//curDoc.close( SaveOptions.DONOTSAVECHANGES )
+			//CREATE logic that determines if a valid name was found i.e. if (aName.length > 3) { }
+	
+		}else{
+			sMsg = "ERROR - NO FILES FOR PROCESSING: The script cannot continue unless the current document is used or a selection from Bridge is used."
+			BECS.WriteLog(oLog, 3, sMe, sMsg)
+		} //use current Confirm
+	} //use current test
+
+
+//================Create RGBI================
+	BE_MakeRGBIs(aProcess)
+    
+	if(bCurDoc == false){
+		sMSG = "FINISHED: Processed in " + BECS.ElapsedTime(oLog.StartTime) + " seconds"
+		BECS.WriteLog(oLog, 0, "",sMSG, true)
+	}else{
+		oLog.str = BECS.sFile(oLog.str)
+		sMSG = "FINISHED: Processed in " + BECS.ElapsedTime(oLog.StartTime) + " seconds.\n File saved as: " + oLog.str
+		BECS.WriteLog(oLog, 0, oLog.str,sMSG, true)		
+	}
+
+//================Final Error Catch================
+	} catch (e) { //Main error try
+		switch (e.number){
+			case 9999:{return} // just return; this is our 'exit' exception
+			default: {if (bDebugging == true){BECS.WriteLog(oLog, e.number, "General Error", "Error name --> " + e.name + "\nError message --> " + e.message, true)};return}
+		}; //end e.number switch
+	}; //Main error try
+};// end main
+
+function BE_MakeRGBIs(aFiles) {  //BE_MakeRGBIs //2-D array containing files for processing; sTransformation = i2K, Standard, Automatic
+var sMe = "BE_MakeRGBIs"
+for (var i=0,iLength = aFiles.length; i<iLength;i++){  //aFiles loop
+	if(i > 0) oLog.str = ""  //this is only used for making from the current document
+	
+	var aTempFiles = [aFiles[i][0],aFiles[i][1]];
+	BEPS.Layers_LoadFilesInto(aTempFiles,false,"RGBI")
+	var psDoc = app.activeDocument
+     psDoc.channels[0].visible = true
+     psDoc.channels[1].visible = true
+     psDoc.channels[2].visible = true
+     psDoc.channels[3].visible = true
+     psDoc.artLayers[0].name = "RGBI"
+
+	//prep file name and save file
+	var aFullName = psDoc.name.split(".")
+	var aName = aFullName[0].split("_")
+	aName[2] = "RGBI-4Band"
+	var sPathFileExt = psDoc.path + "/" + aName.join("_") + oLog.str + ".tif"
+	BEPS.File_Save(sPathFileExt,"tif")
+	
+	oLog.str = sPathFileExt
+	
+	//create label for bridge
+	BEPS.Bridge_SendMetaDataTo(sPathFileExt,"http://ns.adobe.com/xap/1.0/","Label","RGBI-4Band")
+
+	//close the current document to make way for the next
+	psDoc.close(SaveOptions.DONOTSAVECHANGES)
+	oLog.nFiles++
+	sMsg = "PROCESSED: " + aName.join("_") + ".tif"
+	BECS.WriteLog(oLog, 0, sMe, sMsg, false, aName.join("_") + ".tif")
+	}; //aFiles loop end
+}; //BE_MakeRGBIs end
